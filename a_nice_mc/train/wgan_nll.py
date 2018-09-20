@@ -6,7 +6,13 @@ import tensorflow as tf
 from a_nice_mc.utils.bootstrap import Buffer
 from a_nice_mc.utils.logger import create_logger
 from a_nice_mc.utils.nice import TrainingOperator, InferenceOperator
-from a_nice_mc.utils.hmc import HamiltonianMonteCarloSampler as HmcSampler
+#from a_nice_mc.utils.hmc import HamiltonianMonteCarloSampler as HmcSampler
+#from hepmc.core.integration.multi_channel import MultiChannel
+from hepmc.core.markov.metropolis import DefaultMetropolis
+from hepmc.core.phase_space.mapping import MappedDensity
+from hepmc.core.phase_space.rambo import RamboOnDiet
+from hepmc.core.densities.qcd import ee_qq_ng
+#from hepmc.core.densities.gaussian import Gaussian
 
 
 class Trainer(object):
@@ -118,8 +124,10 @@ class Trainer(object):
 
         gpu_options = tf.GPUOptions(allow_growth=True)
         self.sess = tf.Session(config=tf.ConfigProto(
-            inter_op_parallelism_threads=1,
-            intra_op_parallelism_threads=1,
+            #inter_op_parallelism_threads=1,
+            #intra_op_parallelism_threads=1,
+            inter_op_parallelism_threads=0,
+            intra_op_parallelism_threads=0,
             gpu_options=gpu_options,
         ))
 
@@ -151,11 +159,29 @@ class Trainer(object):
         if use_hmc:
 
             if not self.hmc_sampler:
-                self.hmc_sampler = HmcSampler(self.energy_fn,
-                                              lambda bs: np.random.randn(bs, self.x_dim),
-                                              sess=self.sess)
+                #self.hmc_sampler = HmcSampler(self.energy_fn,
+                #                              lambda bs: np.random.randn(bs, self.x_dim),
+                #                              sess=self.sess)
+                #channels = [Gaussian(self.x_dim, mu=1/3, cov=.1**2/2), Gaussian(self.x_dim, mu=2/3, cov=.1**2/2)]
+                #self.hmc_sampler = MultiChannel(channels)
+                target = ee_qq_ng(2, 100., 5., .3)
+                rambo_mapping = RamboOnDiet(100., 4)
+                mapped = MappedDensity(target, rambo_mapping)
+                self.hmc_sampler = DefaultMetropolis(mapped, cov=.01)
 
-            z = self.hmc_sampler.sample(steps, batch_size)
+            print('before hmc_sampler.sample')
+            #z = self.hmc_sampler.sample(steps, batch_size)
+            #z = self.hmc_sampler.rvs(steps*batch_size)
+            start = self.hmc_sampler.sample(1000, np.random.rand(8)).data[-1]
+            z = self.hmc_sampler.sample(steps*batch_size, start).data
+            z = np.reshape(z, (batch_size, steps, self.x_dim))
+            print('steps:', steps)
+            print('batch_size:', batch_size)
+            print('type(z):', type(z))
+            print('z.shape:', z.shape)
+            print('z.min:', z.min())
+            print('z.max:', z.max())
+            print('after hmc_sampler.sample')
         else:
             z, _ = self.sample(steps + burn_in, nice_steps, batch_size)
         z = np.reshape(z[:, burn_in:], [-1, z.shape[-1]])
@@ -201,12 +227,16 @@ class Trainer(object):
                 num_epochs += 1
                 if num_epochs > hmc_epochs:
                     use_hmc = False
+                print('before bootstrap')
                 self.bootstrap(
                     steps=bootstrap_steps, burn_in=bootstrap_burn_in,
                     batch_size=bootstrap_batch_size, discard_ratio=bootstrap_discard_ratio,
                     use_hmc=use_hmc
                 )
+                print('before sample')
                 z, v = self.sample(evaluate_steps + evaluate_burn_in, nice_steps, evaluate_batch_size)
+                print('z:', z)
+                print('v:', v)
                 z, v = z[:, evaluate_burn_in:], v[:, evaluate_burn_in:]
                 self.energy_fn.evaluate([z, v], path=self.path)
                 # TODO: save model
